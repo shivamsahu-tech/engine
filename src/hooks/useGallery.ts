@@ -35,6 +35,8 @@ export const useGallery = () => {
             setDisplayImages(results);
         } catch (error) {
             console.error("Search failed:", error);
+            // Fallback to showing all images if search fails
+            setDisplayImages(allImages);
         } finally {
             setIsSearching(false);
         }
@@ -51,6 +53,8 @@ export const useGallery = () => {
             }
         } catch (error) {
             console.error("Ingestion failed:", error);
+            // Don't crash the app - just log the error
+            // Optionally show a toast or alert to user
         } finally {
             setIsIngesting(false);
         }

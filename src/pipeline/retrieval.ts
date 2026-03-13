@@ -36,11 +36,20 @@ export const RetrievalFunction = async (query: string, allImages: GalleryImage[]
         // 2. Run AI text embedding OUTSIDE the database transaction
         const { tokenizer, textModel } = await getModels();
         
-        const textInputs = await tokenizer([cleanQuery], { padding: 'max_length', truncation: true });
+        const textInputs = await Promise.race([
+            tokenizer([cleanQuery], { padding: 'max_length', truncation: true }),
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Text tokenization timeout')), 10000)
+            )
+        ]);
+        
         const { pooler_output } = await textModel(textInputs);
         
         const textVector = new Float32Array(pooler_output.data);
         normalizeVector(textVector); 
+        
+        // Clean up model outputs to free memory
+        pooler_output.data = null; 
 
         // 3. Run Search INSIDE the transaction wrapper
         await db.transaction(async (tx) => {
@@ -110,6 +119,29 @@ export const RetrievalFunction = async (query: string, allImages: GalleryImage[]
 
     } catch (error) {
         console.error("❌ Search failed:", error);
-        return allImages; 
+        
+        // Fallback: return lexical search only if semantic search fails
+        try {
+            const fallbackResults: GalleryImage[] = [];
+            await db.transaction(async (tx) => {
+                const textRes = await tx.execute(
+                    'SELECT id, path as uri, created_at as createdAt FROM documents WHERE ocr_text LIKE ? ORDER BY created_at DESC LIMIT 50',
+                    [`%${cleanQuery}%`]
+                );
+                const textMatches = textRes.rows || [];
+                textMatches.forEach((match: any) => {
+                    fallbackResults.push({ 
+                        id: match.id?.toString() || '', 
+                        uri: match.uri as string, 
+                        createdAt: match.createdAt as number 
+                    });
+                });
+            });
+            console.log(`⚠️ Using fallback lexical search. Found ${fallbackResults.length} results.`);
+            return fallbackResults;
+        } catch (fallbackError) {
+            console.error("❌ Fallback search also failed:", fallbackError);
+            return allImages; // Return original images as last resort
+        }
     }
 };
